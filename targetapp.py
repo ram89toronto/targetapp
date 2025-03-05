@@ -8,13 +8,13 @@ from requests.adapters import HTTPAdapter
 # 1. Fetch product data from RedCircle API with retries and extraction
 # ----------------------------
 @st.cache(allow_output_mutation=True)
-def fetch_product_data_from_api(tcin: str) -> dict:
+def fetch_product_data_from_api(api_key: str, tcin: str) -> dict:
     """
-    Fetch product data from the RedCircle API using the provided TCIN.
+    Fetch product data from the RedCircle API using the provided API key and TCIN.
     Implements a retry strategy and extracts the nested 'product' data.
     """
     params = {
-        'api_key': '73EC1316A3E54AE9BE5E5F53A589C5F0',
+        'api_key': api_key,
         'type': 'product',
         'tcin': tcin
     }
@@ -22,7 +22,7 @@ def fetch_product_data_from_api(tcin: str) -> dict:
     session = requests.Session()
     retry_strategy = Retry(
         total=3,                      # Total of 3 retries
-        backoff_factor=2,             # Waits: 2s, 4s, 8s
+        backoff_factor=2,             # Waits: 2s, 4s, 8s between retries
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["GET"]
     )
@@ -59,9 +59,13 @@ def init_session_state():
     Initialize session state variables:
       - product_data: data returned from the API.
       - field_status: list of dictionaries for each field and its 'required' status.
+      - api_key: API key input from the user.
     """
     if "product_data" not in st.session_state:
         st.session_state.product_data = {}
+
+    if "api_key" not in st.session_state:
+        st.session_state.api_key = ""
 
     if "field_status" not in st.session_state:
         st.session_state.field_status = [
@@ -106,18 +110,26 @@ key_mapping = {
 # ----------------------------
 def draw_header():
     st.title("Product Data Annotator")
-    st.caption("Enter a TCIN to fetch product data via the RedCircle API, then view, annotate, and export it.")
+    st.caption("Enter your API key and a TCIN to fetch product data via the RedCircle API, then view, annotate, and export it.")
 
 def draw_sidebar():
     with st.sidebar:
+        st.header("API Credentials")
+        # API key input (hidden for security)
+        api_key_input = st.text_input("Enter API Key", value="73EC1316A3E54AE9BE5E5F53A589C5F0", type="password")
+        st.session_state.api_key = api_key_input
+        
         st.header("Search by TCIN")
         tcin_input = st.text_input("Enter TCIN", value="89603872")
         if st.button("Fetch Data", key="fetch_data_button"):
-            product_data = fetch_product_data_from_api(tcin_input)
-            if product_data:
-                st.session_state.product_data = product_data
+            if not st.session_state.api_key:
+                st.error("Please provide an API key!")
             else:
-                st.warning("No product data fetched. Check TCIN or API availability.")
+                product_data = fetch_product_data_from_api(st.session_state.api_key, tcin_input)
+                if product_data:
+                    st.session_state.product_data = product_data
+                else:
+                    st.warning("No product data fetched. Check the TCIN or API availability.")
 
 def draw_product_details_tab():
     st.subheader("Product Details")
@@ -128,7 +140,7 @@ def draw_product_details_tab():
         st.info("No product data found. Please enter a valid TCIN in the sidebar.")
         return
 
-    # Display only fields that are marked as required (plus optional ones if chosen)
+    # Determine which fields to display
     required_fields = [fs["field"] for fs in field_status if fs["required"]]
     show_optional = st.checkbox("Show Optional Fields", value=False)
     optional_fields = [fs["field"] for fs in field_status if not fs["required"]] if show_optional else []
@@ -149,19 +161,16 @@ def draw_product_details_tab():
             st.image(main_image_url, caption="Main Image", use_container_width=True)
         with col2:
             for field in displayed_fields:
-                # For Price, do nested extraction.
+                if field == "Main Image":
+                    continue
                 if field == "Price":
                     price_obj = data.get("buybox_winner", {}).get("price", {})
                     currency = price_obj.get("currency_symbol", "")
                     value = price_obj.get("value", "N/A")
                     st.markdown(f"**{field}:** {currency}{value}")
-                # Skip Main Image as it's already shown.
-                elif field == "Main Image":
-                    continue
                 else:
-                    api_key = key_mapping.get(field, field)
-                    value = data.get(api_key, "N/A")
-                    # If the value is a list (e.g., feature_bullets), join it.
+                    api_key_field = key_mapping.get(field, field)
+                    value = data.get(api_key_field, "N/A")
                     if isinstance(value, list):
                         value = ", ".join([str(x) for x in value])
                     st.markdown(f"**{field}:** {value}")
@@ -175,8 +184,8 @@ def draw_product_details_tab():
             elif field == "Main Image":
                 continue
             else:
-                api_key = key_mapping.get(field, field)
-                value = data.get(api_key, "N/A")
+                api_key_field = key_mapping.get(field, field)
+                value = data.get(api_key_field, "N/A")
                 if isinstance(value, list):
                     value = ", ".join([str(x) for x in value])
                 st.markdown(f"**{field}:** {value}")
@@ -224,8 +233,8 @@ def draw_annotations_tab():
                 main_img = data.get("main_image", {})
                 final_data[field] = main_img.get("link", "N/A") if isinstance(main_img, dict) else "N/A"
             else:
-                api_key = key_mapping.get(field, field)
-                value = data.get(api_key, "N/A")
+                api_key_field = key_mapping.get(field, field)
+                value = data.get(api_key_field, "N/A")
                 if isinstance(value, list):
                     value = ", ".join([str(x) for x in value])
                 final_data[field] = value
@@ -233,9 +242,6 @@ def draw_annotations_tab():
         st.code(json_output, language="json")
         st.success("JSON exported above!")
 
-# ----------------------------
-# 5. Main app function
-# ----------------------------
 def main():
     init_session_state()
     draw_header()
@@ -247,8 +253,5 @@ def main():
     else:
         draw_annotations_tab()
 
-# ----------------------------
-# 6. Run the app
-# ----------------------------
 if __name__ == "__main__":
     main()
